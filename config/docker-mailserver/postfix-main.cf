@@ -1,0 +1,24 @@
+# =============================================================================
+# Postfix main.cf — additional settings appended by docker-mailserver
+#
+# DMS reads this file and appends its contents to /etc/postfix/main.cf.
+# Only add settings here that EXTEND or OVERRIDE DMS defaults.
+# Full reference: http://www.postfix.org/postconf.5.html
+# =============================================================================
+
+# Maximum accepted message size: 50 MB (bytes)
+message_size_limit = 52428800
+
+# No per-mailbox quota (disk quota managed at the OS level if needed)
+mailbox_size_limit = 0
+
+# Reject mail to recipients in unknown local domains
+reject_unknown_recipient_domain = yes
+
+# Improve deliverability: show the real hostname in EHLO
+# (already set by DMS via $myhostname, listed here for clarity)
+# smtp_helo_name = $myhostname
+
+# Reduce backscatter: do not generate bounces for obviously forged senders
+# (DMS enables this by default via reject_unverified_sender in some configs)
+smtpd_delay_reject = yes

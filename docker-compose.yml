@@ -1,0 +1,135 @@
+# =============================================================================
+# UYE Mail Server — Base Compose
+#
+# Do not run this file directly. Use one of:
+#   make dev   →  docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#   make prod  →  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # Mail server: Postfix (MTA) + Dovecot (IMAP) + Rspamd (spam/DKIM/DMARC)
+  # ---------------------------------------------------------------------------
+  mailserver:
+    image: ghcr.io/docker-mailserver/docker-mailserver:14
+    container_name: ${COMPOSE_PROJECT_NAME:-uye-mail}-mailserver
+    hostname: ${MAIL_HOSTNAME}
+    env_file: .env
+    environment:
+      # --- Feature flags ---
+      ENABLE_RSPAMD: "1"
+      ENABLE_RSPAMD_REDIS: "0"      # Redis not needed at low volume
+      ENABLE_CLAMAV: "0"            # ClamAV is heavy; add back if needed
+      ENABLE_AMAVIS: "0"
+      ENABLE_SPAMASSASSIN: "0"      # Replaced by Rspamd
+      ENABLE_POSTGREY: "0"          # Greylisting managed by Rspamd
+      ENABLE_FAIL2BAN: "1"
+      # --- Rspamd ---
+      RSPAMD_CONTROLLER_PASSWORD: ${RSPAMD_PASSWORD}
+      MOVE_SPAM_TO_JUNK: "1"
+      # --- Network ---
+      POSTFIX_INET_PROTOCOLS: ipv4
+      PERMIT_DOCKER: connected-networks
+      # --- Relay (overridden in docker-compose.dev.yml) ---
+      RELAY_HOST: smtp.sendgrid.net
+      RELAY_PORT: "587"
+      RELAY_USER: apikey
+      RELAY_PASSWORD: ${SENDGRID_API_KEY}
+      # --- Identity ---
+      POSTMASTER_ADDRESS: ${POSTMASTER_EMAIL}
+      # --- TLS (overridden per environment) ---
+      SSL_TYPE: ""
+      # --- Logging ---
+      LOG_LEVEL: info
+      SUPERVISOR_LOGLEVEL: warn
+    ports:
+      # SMTP/IMAP are exposed directly on the host — they bypass HTTP routing
+      - "${SMTP_PORT:-25}:25"
+      - "${SUBMISSION_PORT:-587}:587"
+      - "${SUBMISSIONS_PORT:-465}:465"
+      - "${IMAP_PORT:-143}:143"
+      - "${IMAPS_PORT:-993}:993"
+      # Rspamd web UI
+      - "${RSPAMD_PORT:-11334}:11334"
+    volumes:
+      - ./data/mail:/var/mail
+      - ./data/mail-state:/var/mail-state
+      - ./data/mail-logs:/var/log/mail
+      # Mount the entire config dir; DMS reads well-known filenames from here
+      - ./config/docker-mailserver:/tmp/docker-mailserver
+    networks:
+      - mail-net
+    restart: unless-stopped
+    stop_grace_period: 1m
+    cap_add:
+      - NET_ADMIN    # Required by fail2ban and some Postfix operations
+      - SYS_PTRACE
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD", "ss", "-lntp", "sport", "=", ":25"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Webmail client (Roundcube)
+  # In prod, nginx (uye-edge) proxies to this container via uye-net.
+  # ---------------------------------------------------------------------------
+  roundcube:
+    image: roundcube/roundcubemail:1.6-apache
+    container_name: ${COMPOSE_PROJECT_NAME:-uye-mail}-roundcube
+    env_file: .env
+    environment:
+      # IMAP host — override prefix in compose.dev / compose.prod
+      ROUNDCUBEMAIL_DEFAULT_HOST: ${RC_IMAP_HOST:-mailserver}
+      ROUNDCUBEMAIL_DEFAULT_PORT: ${RC_IMAP_PORT:-143}
+      # SMTP host — Roundcube sends as the authenticated user
+      ROUNDCUBEMAIL_SMTP_SERVER: ${RC_SMTP_HOST:-mailserver}
+      ROUNDCUBEMAIL_SMTP_PORT: ${RC_SMTP_PORT:-587}
+      ROUNDCUBEMAIL_SMTP_USER: "%u"
+      ROUNDCUBEMAIL_SMTP_PASS: "%p"
+      # Storage
+      ROUNDCUBEMAIL_DB_TYPE: sqlite
+      # Security
+      ROUNDCUBEMAIL_DES_KEY: ${ROUNDCUBE_DES_KEY}
+      # UI
+      ROUNDCUBEMAIL_SKIN: elastic
+      ROUNDCUBEMAIL_UPLOAD_MAX_FILESIZE: 25M
+      ROUNDCUBEMAIL_PLUGINS: archive,zipdownload,managesieve
+      # Branding
+      ROUNDCUBEMAIL_PRODUCT_NAME: "UYE Mail"
+    volumes:
+      - ./data/roundcube:/var/roundcube/db
+      - ./config/roundcube/config.inc.php:/var/roundcube/config/config.inc.php:ro
+    networks:
+      - mail-net
+      - uye-net
+    depends_on:
+      - mailserver
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  # Internal — only mailserver and roundcube communicate here
+  mail-net:
+    driver: bridge
+    name: ${COMPOSE_PROJECT_NAME:-uye-mail}-mail-net
+
+  # External — nginx (uye-edge) discovers services on this network.
+  # Overridden in docker-compose.dev.yml to be a local bridge (not external).
+  uye-net:
+    external: true
+    name: ${UYE_NETWORK:-uye-net}

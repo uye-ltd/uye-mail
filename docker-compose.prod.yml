@@ -1,0 +1,66 @@
+# =============================================================================
+# UYE Mail Server — Production Overrides
+#
+# Usage:  make prod
+#         docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Prerequisites:
+#   - TLS_CERT_PATH and TLS_KEY_PATH set in .env (from uye-edge / certbot)
+#   - UYE_NETWORK set to the shared network name from uye-edge
+#   - SENDGRID_API_KEY set
+#   - DNS records configured (see README.md)
+#   - DKIM keys generated (make gen-dkim)
+# =============================================================================
+
+services:
+
+  mailserver:
+    environment:
+      # TLS: mount certs from uye-edge (Let's Encrypt)
+      SSL_TYPE: manual
+      SSL_CERT_PATH: /tmp/docker-mailserver/ssl/cert.pem
+      SSL_KEY_PATH: /tmp/docker-mailserver/ssl/privkey.pem
+      # Production relay — real emails via SendGrid
+      RELAY_HOST: smtp.sendgrid.net
+      RELAY_PORT: "587"
+      RELAY_USER: apikey
+      RELAY_PASSWORD: ${SENDGRID_API_KEY}
+      # Security
+      ENABLE_FAIL2BAN: "1"
+      # Quieter logs in prod
+      LOG_LEVEL: warn
+      SUPERVISOR_LOGLEVEL: warn
+    volumes:
+      # Mount TLS certs from the host (managed by uye-edge / certbot)
+      - ${TLS_CERT_PATH}:/tmp/docker-mailserver/ssl/cert.pem:ro
+      - ${TLS_KEY_PATH}:/tmp/docker-mailserver/ssl/privkey.pem:ro
+    # In prod, Rspamd UI should only be reachable via nginx (uye-net),
+    # not directly from the internet. Remove the host port binding here
+    # and proxy port 11334 through nginx instead.
+    ports:
+      - "${SMTP_PORT:-25}:25"
+      - "${SUBMISSION_PORT:-587}:587"
+      - "${SUBMISSIONS_PORT:-465}:465"
+      - "${IMAP_PORT:-143}:143"
+      - "${IMAPS_PORT:-993}:993"
+      # Rspamd UI: bind to localhost only; proxy via nginx on uye-net if needed
+      - "127.0.0.1:${RSPAMD_PORT:-11334}:11334"
+    restart: always
+    mem_limit: 768m
+
+  roundcube:
+    environment:
+      # STARTTLS connections to mailserver (certs are valid in prod)
+      RC_IMAP_HOST: tls://mailserver
+      RC_IMAP_PORT: "143"
+      RC_SMTP_HOST: tls://mailserver
+      RC_SMTP_PORT: "587"
+    # No host port binding — nginx (uye-edge) routes to roundcube via uye-net
+    restart: always
+    mem_limit: 256m
+
+# In prod, uye-net is the shared external network owned by uye-edge.
+networks:
+  uye-net:
+    external: true
+    name: ${UYE_NETWORK:-uye-net}

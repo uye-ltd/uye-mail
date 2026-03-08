@@ -1,0 +1,64 @@
+# =============================================================================
+# UYE Mail Server — Development Overrides
+#
+# Usage:  make dev
+#         docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+#
+# Changes from base:
+#   - Outbound mail is captured by Mailpit (no real emails sent)
+#   - No TLS (plain connections between containers)
+#   - Roundcube accessible on localhost:8080
+#   - Rspamd UI accessible on localhost:11334
+#   - Fail2ban and greylisting disabled for fast iteration
+#   - Log level set to debug
+# =============================================================================
+
+services:
+
+  mailserver:
+    environment:
+      # Relay to Mailpit instead of SendGrid — no real emails sent in dev
+      RELAY_HOST: mailpit
+      RELAY_PORT: "1025"
+      RELAY_USER: ""
+      RELAY_PASSWORD: ""
+      # No TLS needed for local dev (plain IMAP/SMTP between containers)
+      SSL_TYPE: ""
+      # Relax spam/security checks for fast local iteration
+      ENABLE_FAIL2BAN: "0"
+      RSPAMD_GREYLISTING: "0"
+      # Verbose logs
+      LOG_LEVEL: debug
+      SUPERVISOR_LOGLEVEL: info
+
+  roundcube:
+    environment:
+      # Plain (no TLS) connections to mailserver inside Docker network
+      RC_IMAP_HOST: mailserver
+      RC_IMAP_PORT: "143"
+      RC_SMTP_HOST: mailserver
+      RC_SMTP_PORT: "587"
+    ports:
+      - "${HTTP_ROUNDCUBE_PORT:-8080}:80"
+
+  # ---------------------------------------------------------------------------
+  # Mailpit — captures all outbound email in dev, replaces SendGrid relay.
+  # Web UI: http://localhost:8025
+  # SMTP:   localhost:1025 (also reachable as "mailpit" inside Docker network)
+  # ---------------------------------------------------------------------------
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-uye-mail}-mailpit
+    ports:
+      - "${HTTP_MAILPIT_PORT:-8025}:8025"    # Web UI
+      - "1025:1025"                           # SMTP (for services connecting directly)
+    networks:
+      - mail-net
+    restart: unless-stopped
+
+# Override uye-net to be a plain local bridge in dev.
+# No dependency on the uye-edge repo or any external network.
+networks:
+  uye-net:
+    external: false
+    name: ${COMPOSE_PROJECT_NAME:-uye-mail}-uye-net-dev
